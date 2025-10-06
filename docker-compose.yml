@@ -1,0 +1,173 @@
+version: '3.8'
+
+services:
+  # Infrastructure Services
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: microservices
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # Monitoring & Tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      COLLECTOR_OTLP_ENABLED: true
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+
+  # Application Services
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      USER_SERVICE_URL: "user-service:8081"
+      ORDER_SERVICE_URL: "order-service:8082"
+      PRODUCT_SERVICE_URL: "product-service:8083"
+      PAYMENT_SERVICE_URL: "payment-service:8084"
+      NOTIFICATION_SERVICE_URL: "notification-service:8085"
+    depends_on:
+      - jaeger
+      - prometheus
+    networks:
+      - microservices
+
+  user-service:
+    build:
+      context: .
+      dockerfile: services/user-service/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      DATABASE_URL: "postgres://postgres:password@postgres:5432/userdb?sslmode=disable"
+      JWT_SECRET: "your-jwt-secret-key"
+      JAEGER_URL: "http://jaeger:14268/api/traces"
+    depends_on:
+      - postgres
+      - jaeger
+    networks:
+      - microservices
+
+  order-service:
+    build:
+      context: .
+      dockerfile: services/order-service/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      PORT: "8082"
+      DATABASE_URL: "postgres://postgres:password@postgres:5432/orderdb?sslmode=disable"
+      USER_SERVICE_URL: "user-service:8081"
+      PRODUCT_SERVICE_URL: "product-service:8083"
+      PAYMENT_SERVICE_URL: "payment-service:8084"
+      JAEGER_URL: "http://jaeger:14268/api/traces"
+    depends_on:
+      - postgres
+      - jaeger
+      - user-service
+      - product-service
+    networks:
+      - microservices
+
+  product-service:
+    build:
+      context: .
+      dockerfile: services/product-service/Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      PORT: "8083"
+      DATABASE_URL: "postgres://postgres:password@postgres:5432/productdb?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      JAEGER_URL: "http://jaeger:14268/api/traces"
+    depends_on:
+      - postgres
+      - redis
+      - jaeger
+    networks:
+      - microservices
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/payment-service/Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      PORT: "8084"
+      DATABASE_URL: "postgres://postgres:password@postgres:5432/paymentdb?sslmode=disable"
+      ORDER_SERVICE_URL: "order-service:8082"
+      JAEGER_URL: "http://jaeger:14268/api/traces"
+    depends_on:
+      - postgres
+      - jaeger
+    networks:
+      - microservices
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      PORT: "8085"
+      DATABASE_URL: "postgres://postgres:password@postgres:5432/notificationdb?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      JAEGER_URL: "http://jaeger:14268/api/traces"
+    depends_on:
+      - postgres
+      - redis
+      - jaeger
+    networks:
+      - microservices
+
+networks:
+  microservices:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:

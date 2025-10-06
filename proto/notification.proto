@@ -1,0 +1,182 @@
+syntax = "proto3";
+
+package notification.v1;
+
+option go_package = "microservices-platform/pkg/proto/notification/v1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+// Notification service definition
+service NotificationService {
+  // Send notification
+  rpc SendNotification(SendNotificationRequest) returns (SendNotificationResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/notifications"
+      body: "*"
+    };
+  }
+
+  // Get notification by ID
+  rpc GetNotification(GetNotificationRequest) returns (GetNotificationResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/notifications/{notification_id}"
+    };
+  }
+
+  // List notifications for user
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/notifications"
+    };
+  }
+
+  // Mark notification as read
+  rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse) {
+    option (google.api.http) = {
+      put: "/api/v1/notifications/{notification_id}/read"
+      body: "*"
+    };
+  }
+
+  // Delete notification
+  rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse) {
+    option (google.api.http) = {
+      delete: "/api/v1/notifications/{notification_id}"
+    };
+  }
+
+  // Subscribe to notifications
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/notifications/subscribe"
+      body: "*"
+    };
+  }
+}
+
+// Notification message
+message Notification {
+  string notification_id = 1;
+  string user_id = 2;
+  string title = 3;
+  string message = 4;
+  NotificationType type = 5;
+  NotificationChannel channel = 6;
+  NotificationStatus status = 7;
+  map<string, string> metadata = 8;
+  bool read = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp read_at = 11;
+}
+
+// Notification type enumeration
+enum NotificationType {
+  NOTIFICATION_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_TYPE_ORDER_CONFIRMATION = 1;
+  NOTIFICATION_TYPE_ORDER_SHIPPED = 2;
+  NOTIFICATION_TYPE_ORDER_DELIVERED = 3;
+  NOTIFICATION_TYPE_PAYMENT_SUCCESS = 4;
+  NOTIFICATION_TYPE_PAYMENT_FAILED = 5;
+  NOTIFICATION_TYPE_ACCOUNT_UPDATE = 6;
+  NOTIFICATION_TYPE_PROMOTIONAL = 7;
+  NOTIFICATION_TYPE_SYSTEM_ALERT = 8;
+}
+
+// Notification channel enumeration
+enum NotificationChannel {
+  NOTIFICATION_CHANNEL_UNSPECIFIED = 0;
+  NOTIFICATION_CHANNEL_EMAIL = 1;
+  NOTIFICATION_CHANNEL_SMS = 2;
+  NOTIFICATION_CHANNEL_PUSH = 3;
+  NOTIFICATION_CHANNEL_IN_APP = 4;
+}
+
+// Notification status enumeration
+enum NotificationStatus {
+  NOTIFICATION_STATUS_UNSPECIFIED = 0;
+  NOTIFICATION_STATUS_PENDING = 1;
+  NOTIFICATION_STATUS_SENT = 2;
+  NOTIFICATION_STATUS_DELIVERED = 3;
+  NOTIFICATION_STATUS_FAILED = 4;
+  NOTIFICATION_STATUS_CANCELLED = 5;
+}
+
+// Send notification request
+message SendNotificationRequest {
+  string user_id = 1;
+  string title = 2;
+  string message = 3;
+  NotificationType type = 4;
+  repeated NotificationChannel channels = 5;
+  map<string, string> metadata = 6;
+  bool immediate = 7;
+}
+
+// Send notification response
+message SendNotificationResponse {
+  repeated Notification notifications = 1;
+}
+
+// Get notification request
+message GetNotificationRequest {
+  string notification_id = 1;
+}
+
+// Get notification response
+message GetNotificationResponse {
+  Notification notification = 1;
+}
+
+// List notifications request
+message ListNotificationsRequest {
+  string user_id = 1;
+  NotificationType type = 2;
+  NotificationChannel channel = 3;
+  bool unread_only = 4;
+  int32 page = 5;
+  int32 page_size = 6;
+}
+
+// List notifications response
+message ListNotificationsResponse {
+  repeated Notification notifications = 1;
+  int32 total_count = 2;
+  int32 unread_count = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+// Mark as read request
+message MarkAsReadRequest {
+  string notification_id = 1;
+}
+
+// Mark as read response
+message MarkAsReadResponse {
+  Notification notification = 1;
+}
+
+// Delete notification request
+message DeleteNotificationRequest {
+  string notification_id = 1;
+}
+
+// Delete notification response
+message DeleteNotificationResponse {
+  bool success = 1;
+}
+
+// Subscribe request
+message SubscribeRequest {
+  string user_id = 1;
+  repeated NotificationType types = 2;
+  repeated NotificationChannel channels = 3;
+  map<string, string> preferences = 4;
+}
+
+// Subscribe response
+message SubscribeResponse {
+  bool success = 1;
+  string subscription_id = 2;
+}

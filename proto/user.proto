@@ -1,0 +1,154 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package = "microservices-platform/pkg/proto/user/v1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+// User service definition
+service UserService {
+  // Create a new user
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/users"
+      body: "*"
+    };
+  }
+
+  // Get user by ID
+  rpc GetUser(GetUserRequest) returns (GetUserResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/users/{user_id}"
+    };
+  }
+
+  // Update user
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse) {
+    option (google.api.http) = {
+      put: "/api/v1/users/{user_id}"
+      body: "*"
+    };
+  }
+
+  // Delete user
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {
+    option (google.api.http) = {
+      delete: "/api/v1/users/{user_id}"
+    };
+  }
+
+  // List users
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/users"
+    };
+  }
+
+  // Authenticate user
+  rpc AuthenticateUser(AuthenticateUserRequest) returns (AuthenticateUserResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/login"
+      body: "*"
+    };
+  }
+}
+
+// User message
+message User {
+  string user_id = 1;
+  string email = 2;
+  string username = 3;
+  string first_name = 4;
+  string last_name = 5;
+  UserStatus status = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// User status enumeration
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_ACTIVE = 1;
+  USER_STATUS_INACTIVE = 2;
+  USER_STATUS_SUSPENDED = 3;
+}
+
+// Create user request
+message CreateUserRequest {
+  string email = 1;
+  string username = 2;
+  string password = 3;
+  string first_name = 4;
+  string last_name = 5;
+}
+
+// Create user response
+message CreateUserResponse {
+  User user = 1;
+}
+
+// Get user request
+message GetUserRequest {
+  string user_id = 1;
+}
+
+// Get user response
+message GetUserResponse {
+  User user = 1;
+}
+
+// Update user request
+message UpdateUserRequest {
+  string user_id = 1;
+  string email = 2;
+  string username = 3;
+  string first_name = 4;
+  string last_name = 5;
+  UserStatus status = 6;
+}
+
+// Update user response
+message UpdateUserResponse {
+  User user = 1;
+}
+
+// Delete user request
+message DeleteUserRequest {
+  string user_id = 1;
+}
+
+// Delete user response
+message DeleteUserResponse {
+  bool success = 1;
+}
+
+// List users request
+message ListUsersRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string filter = 3;
+}
+
+// List users response
+message ListUsersResponse {
+  repeated User users = 1;
+  int32 total_count = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// Authenticate user request
+message AuthenticateUserRequest {
+  string email = 1;
+  string password = 2;
+}
+
+// Authenticate user response
+message AuthenticateUserResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  User user = 3;
+  int64 expires_in = 4;
+}

@@ -1,0 +1,167 @@
+syntax = "proto3";
+
+package payment.v1;
+
+option go_package = "microservices-platform/pkg/proto/payment/v1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+// Payment service definition
+service PaymentService {
+  // Process payment
+  rpc ProcessPayment(ProcessPaymentRequest) returns (ProcessPaymentResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/payments"
+      body: "*"
+    };
+  }
+
+  // Get payment by ID
+  rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/payments/{payment_id}"
+    };
+  }
+
+  // Refund payment
+  rpc RefundPayment(RefundPaymentRequest) returns (RefundPaymentResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/payments/{payment_id}/refund"
+      body: "*"
+    };
+  }
+
+  // List payments
+  rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/payments"
+    };
+  }
+
+  // Verify payment webhook
+  rpc VerifyWebhook(VerifyWebhookRequest) returns (VerifyWebhookResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/payments/webhook"
+      body: "*"
+    };
+  }
+}
+
+// Payment message
+message Payment {
+  string payment_id = 1;
+  string order_id = 2;
+  string user_id = 3;
+  double amount = 4;
+  string currency = 5;
+  PaymentMethod method = 6;
+  PaymentStatus status = 7;
+  string transaction_id = 8;
+  string gateway = 9;
+  string gateway_response = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+// Payment method enumeration
+enum PaymentMethod {
+  PAYMENT_METHOD_UNSPECIFIED = 0;
+  PAYMENT_METHOD_CREDIT_CARD = 1;
+  PAYMENT_METHOD_DEBIT_CARD = 2;
+  PAYMENT_METHOD_PAYPAL = 3;
+  PAYMENT_METHOD_BANK_TRANSFER = 4;
+  PAYMENT_METHOD_DIGITAL_WALLET = 5;
+}
+
+// Payment status enumeration
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PAYMENT_STATUS_PENDING = 1;
+  PAYMENT_STATUS_PROCESSING = 2;
+  PAYMENT_STATUS_COMPLETED = 3;
+  PAYMENT_STATUS_FAILED = 4;
+  PAYMENT_STATUS_CANCELLED = 5;
+  PAYMENT_STATUS_REFUNDED = 6;
+  PAYMENT_STATUS_PARTIALLY_REFUNDED = 7;
+}
+
+// Payment card details
+message PaymentCard {
+  string card_number = 1;
+  string expiry_month = 2;
+  string expiry_year = 3;
+  string cvv = 4;
+  string holder_name = 5;
+}
+
+// Process payment request
+message ProcessPaymentRequest {
+  string order_id = 1;
+  string user_id = 2;
+  double amount = 3;
+  string currency = 4;
+  PaymentMethod method = 5;
+  PaymentCard card_details = 6;
+  string return_url = 7;
+  string callback_url = 8;
+}
+
+// Process payment response
+message ProcessPaymentResponse {
+  Payment payment = 1;
+  string redirect_url = 2;
+}
+
+// Get payment request
+message GetPaymentRequest {
+  string payment_id = 1;
+}
+
+// Get payment response
+message GetPaymentResponse {
+  Payment payment = 1;
+}
+
+// Refund payment request
+message RefundPaymentRequest {
+  string payment_id = 1;
+  double amount = 2;
+  string reason = 3;
+}
+
+// Refund payment response
+message RefundPaymentResponse {
+  Payment payment = 1;
+  string refund_id = 2;
+}
+
+// List payments request
+message ListPaymentsRequest {
+  string user_id = 1;
+  string order_id = 2;
+  PaymentStatus status = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+// List payments response
+message ListPaymentsResponse {
+  repeated Payment payments = 1;
+  int32 total_count = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// Verify webhook request
+message VerifyWebhookRequest {
+  string gateway = 1;
+  string signature = 2;
+  bytes payload = 3;
+}
+
+// Verify webhook response
+message VerifyWebhookResponse {
+  bool valid = 1;
+  Payment payment = 2;
+}

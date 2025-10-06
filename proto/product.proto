@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package product.v1;
+
+option go_package = "microservices-platform/pkg/proto/product/v1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+// Product service definition
+service ProductService {
+  // Create a new product
+  rpc CreateProduct(CreateProductRequest) returns (CreateProductResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/products"
+      body: "*"
+    };
+  }
+
+  // Get product by ID
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/products/{product_id}"
+    };
+  }
+
+  // Update product
+  rpc UpdateProduct(UpdateProductRequest) returns (UpdateProductResponse) {
+    option (google.api.http) = {
+      put: "/api/v1/products/{product_id}"
+      body: "*"
+    };
+  }
+
+  // Delete product
+  rpc DeleteProduct(DeleteProductRequest) returns (DeleteProductResponse) {
+    option (google.api.http) = {
+      delete: "/api/v1/products/{product_id}"
+    };
+  }
+
+  // List products
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/products"
+    };
+  }
+
+  // Search products
+  rpc SearchProducts(SearchProductsRequest) returns (SearchProductsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/products/search"
+    };
+  }
+
+  // Update inventory
+  rpc UpdateInventory(UpdateInventoryRequest) returns (UpdateInventoryResponse) {
+    option (google.api.http) = {
+      put: "/api/v1/products/{product_id}/inventory"
+      body: "*"
+    };
+  }
+}
+
+// Product message
+message Product {
+  string product_id = 1;
+  string name = 2;
+  string description = 3;
+  double price = 4;
+  string category = 5;
+  string brand = 6;
+  string sku = 7;
+  int32 inventory_quantity = 8;
+  repeated string images = 9;
+  ProductStatus status = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+// Product status enumeration
+enum ProductStatus {
+  PRODUCT_STATUS_UNSPECIFIED = 0;
+  PRODUCT_STATUS_ACTIVE = 1;
+  PRODUCT_STATUS_INACTIVE = 2;
+  PRODUCT_STATUS_OUT_OF_STOCK = 3;
+  PRODUCT_STATUS_DISCONTINUED = 4;
+}
+
+// Create product request
+message CreateProductRequest {
+  string name = 1;
+  string description = 2;
+  double price = 3;
+  string category = 4;
+  string brand = 5;
+  string sku = 6;
+  int32 inventory_quantity = 7;
+  repeated string images = 8;
+}
+
+// Create product response
+message CreateProductResponse {
+  Product product = 1;
+}
+
+// Get product request
+message GetProductRequest {
+  string product_id = 1;
+}
+
+// Get product response
+message GetProductResponse {
+  Product product = 1;
+}
+
+// Update product request
+message UpdateProductRequest {
+  string product_id = 1;
+  string name = 2;
+  string description = 3;
+  double price = 4;
+  string category = 5;
+  string brand = 6;
+  string sku = 7;
+  repeated string images = 8;
+  ProductStatus status = 9;
+}
+
+// Update product response
+message UpdateProductResponse {
+  Product product = 1;
+}
+
+// Delete product request
+message DeleteProductRequest {
+  string product_id = 1;
+}
+
+// Delete product response
+message DeleteProductResponse {
+  bool success = 1;
+}
+
+// List products request
+message ListProductsRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string category = 3;
+  string brand = 4;
+  ProductStatus status = 5;
+}
+
+// List products response
+message ListProductsResponse {
+  repeated Product products = 1;
+  int32 total_count = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// Search products request
+message SearchProductsRequest {
+  string query = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  string category = 4;
+  double min_price = 5;
+  double max_price = 6;
+}
+
+// Search products response
+message SearchProductsResponse {
+  repeated Product products = 1;
+  int32 total_count = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// Update inventory request
+message UpdateInventoryRequest {
+  string product_id = 1;
+  int32 quantity_change = 2;
+  string reason = 3;
+}
+
+// Update inventory response
+message UpdateInventoryResponse {
+  Product product = 1;
+}
