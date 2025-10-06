@@ -1,173 +1,475 @@
 version: '3.8'
 
 services:
-  # Infrastructure Services
+  # 🗄️ Infrastructure Services
   postgres:
     image: postgres:15-alpine
+    container_name: microservices-postgres
     environment:
       POSTGRES_DB: microservices
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - microservices
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
+    container_name: microservices-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      - ./monitoring/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - microservices
+    restart: unless-stopped
 
-  # Monitoring & Tracing
+  # 📊 Monitoring & Observability
   jaeger:
     image: jaegertracing/all-in-one:latest
+    container_name: microservices-jaeger
     ports:
-      - "16686:16686"
-      - "14268:14268"
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector HTTP
+      - "14250:14250"  # Jaeger collector gRPC
+      - "9411:9411"    # Zipkin compatible endpoint
     environment:
       COLLECTOR_OTLP_ENABLED: true
+      COLLECTOR_ZIPKIN_HOST_PORT: 9411
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:14269/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - microservices
+    restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
+    container_name: microservices-prometheus
     ports:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml
+      - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - microservices
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:latest
+    container_name: microservices-grafana
     ports:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+      GF_SECURITY_ALLOW_EMBEDDING: true
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana:/etc/grafana/provisioning
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - microservices
+    restart: unless-stopped
 
-  # Application Services
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: microservices-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    networks:
+      - microservices
+    restart: unless-stopped
+
+  # 🌐 Application Services
   api-gateway:
     build:
       context: .
       dockerfile: api-gateway/Dockerfile
+    container_name: microservices-api-gateway
     ports:
       - "8080:8080"
     environment:
+      # Service Configuration
       PORT: "8080"
+      ENVIRONMENT: "development"
+      DEBUG: "true"
+      
+      # Service URLs
       USER_SERVICE_URL: "user-service:8081"
       ORDER_SERVICE_URL: "order-service:8082"
       PRODUCT_SERVICE_URL: "product-service:8083"
       PAYMENT_SERVICE_URL: "payment-service:8084"
       NOTIFICATION_SERVICE_URL: "notification-service:8085"
+      
+      # Security
+      JWT_SECRET: "your-development-jwt-secret-key"
+      RATE_LIMIT_PER_MINUTE: "100"
+      
+      # Observability
+      JAEGER_URL: "http://jaeger:14268/api/traces"
+      METRICS_ENABLED: "true"
+      LOG_LEVEL: "debug"
     depends_on:
-      - jaeger
-      - prometheus
+      jaeger:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - microservices
+    restart: unless-stopped
 
   user-service:
     build:
       context: .
       dockerfile: services/user-service/Dockerfile
+    container_name: microservices-user-service
     ports:
       - "8081:8081"
     environment:
+      # Service Configuration
+      SERVICE_NAME: "user-service"
       PORT: "8081"
+      ENVIRONMENT: "development"
+      DEBUG: "true"
+      
+      # Database
       DATABASE_URL: "postgres://postgres:password@postgres:5432/userdb?sslmode=disable"
-      JWT_SECRET: "your-jwt-secret-key"
+      DB_MAX_CONNECTIONS: "25"
+      DB_QUERY_TIMEOUT: "30s"
+      
+      # Security
+      JWT_SECRET: "your-development-jwt-secret-key"
+      JWT_EXPIRATION: "24h"
+      PASSWORD_MIN_LENGTH: "8"
+      
+      # Observability
       JAEGER_URL: "http://jaeger:14268/api/traces"
+      METRICS_ENABLED: "true"
+      LOG_LEVEL: "debug"
     depends_on:
-      - postgres
-      - jaeger
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grpc_health_probe -addr=:8081 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - microservices
+    restart: unless-stopped
 
   order-service:
     build:
       context: .
       dockerfile: services/order-service/Dockerfile
+    container_name: microservices-order-service
     ports:
       - "8082:8082"
     environment:
+      # Service Configuration
+      SERVICE_NAME: "order-service"
       PORT: "8082"
+      ENVIRONMENT: "development"
+      DEBUG: "true"
+      
+      # Database
       DATABASE_URL: "postgres://postgres:password@postgres:5432/orderdb?sslmode=disable"
+      DB_MAX_CONNECTIONS: "25"
+      
+      # Service Dependencies
       USER_SERVICE_URL: "user-service:8081"
       PRODUCT_SERVICE_URL: "product-service:8083"
       PAYMENT_SERVICE_URL: "payment-service:8084"
+      NOTIFICATION_SERVICE_URL: "notification-service:8085"
+      
+      # Event Bus
+      REDIS_URL: "redis:6379"
+      
+      # Observability
       JAEGER_URL: "http://jaeger:14268/api/traces"
+      METRICS_ENABLED: "true"
+      LOG_LEVEL: "debug"
     depends_on:
-      - postgres
-      - jaeger
-      - user-service
-      - product-service
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grpc_health_probe -addr=:8082 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - microservices
+    restart: unless-stopped
 
   product-service:
     build:
       context: .
       dockerfile: services/product-service/Dockerfile
+    container_name: microservices-product-service
     ports:
       - "8083:8083"
     environment:
+      # Service Configuration
+      SERVICE_NAME: "product-service"
       PORT: "8083"
+      ENVIRONMENT: "development"
+      DEBUG: "true"
+      
+      # Database
       DATABASE_URL: "postgres://postgres:password@postgres:5432/productdb?sslmode=disable"
+      DB_MAX_CONNECTIONS: "25"
+      
+      # Caching
       REDIS_URL: "redis:6379"
+      CACHE_ENABLED: "true"
+      CACHE_TTL: "5m"
+      
+      # Observability
       JAEGER_URL: "http://jaeger:14268/api/traces"
+      METRICS_ENABLED: "true"
+      LOG_LEVEL: "debug"
     depends_on:
-      - postgres
-      - redis
-      - jaeger
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grpc_health_probe -addr=:8083 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - microservices
+    restart: unless-stopped
 
   payment-service:
     build:
       context: .
       dockerfile: services/payment-service/Dockerfile
+    container_name: microservices-payment-service
     ports:
       - "8084:8084"
     environment:
+      # Service Configuration
+      SERVICE_NAME: "payment-service"
       PORT: "8084"
+      ENVIRONMENT: "development"
+      DEBUG: "true"
+      
+      # Database
       DATABASE_URL: "postgres://postgres:password@postgres:5432/paymentdb?sslmode=disable"
+      DB_MAX_CONNECTIONS: "25"
+      
+      # Service Dependencies
       ORDER_SERVICE_URL: "order-service:8082"
+      
+      # Payment Gateways (mock in development)
+      STRIPE_SECRET_KEY: "sk_test_development_key"
+      PAYPAL_CLIENT_ID: "development_client_id"
+      
+      # Event Bus
+      REDIS_URL: "redis:6379"
+      
+      # Observability
       JAEGER_URL: "http://jaeger:14268/api/traces"
+      METRICS_ENABLED: "true"
+      LOG_LEVEL: "debug"
     depends_on:
-      - postgres
-      - jaeger
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grpc_health_probe -addr=:8084 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - microservices
+    restart: unless-stopped
 
   notification-service:
     build:
       context: .
       dockerfile: services/notification-service/Dockerfile
+    container_name: microservices-notification-service
     ports:
       - "8085:8085"
     environment:
+      # Service Configuration
+      SERVICE_NAME: "notification-service"
       PORT: "8085"
+      ENVIRONMENT: "development"
+      DEBUG: "true"
+      
+      # Database
       DATABASE_URL: "postgres://postgres:password@postgres:5432/notificationdb?sslmode=disable"
+      DB_MAX_CONNECTIONS: "25"
+      
+      # Caching & Event Bus
       REDIS_URL: "redis:6379"
+      
+      # Email Configuration (mock in development)
+      SMTP_HOST: "mailhog"
+      SMTP_PORT: "1025"
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+      
+      # Push Notification Configuration
+      FCM_SERVER_KEY: "development_fcm_key"
+      
+      # Observability
       JAEGER_URL: "http://jaeger:14268/api/traces"
+      METRICS_ENABLED: "true"
+      LOG_LEVEL: "debug"
     depends_on:
-      - postgres
-      - redis
-      - jaeger
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grpc_health_probe -addr=:8085 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - microservices
+    restart: unless-stopped
+
+  # 📧 Development Email Server
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: microservices-mailhog
+    ports:
+      - "1025:1025"  # SMTP server
+      - "8025:8025"  # Web UI
+    networks:
+      - microservices
+    restart: unless-stopped
+
+  # 🔍 Additional Development Tools
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: microservices-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - microservices
+    restart: unless-stopped
+
+  # 🗄️ Database Management Tool
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: microservices-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@microservices.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - microservices
+    restart: unless-stopped
 
 networks:
   microservices:
     driver: bridge
+    name: microservices-network
 
 volumes:
   postgres_data:
+    name: microservices-postgres-data
   redis_data:
+    name: microservices-redis-data
   grafana_data:
+    name: microservices-grafana-data
+  prometheus_data:
+    name: microservices-prometheus-data
+  alertmanager_data:
+    name: microservices-alertmanager-data
+  pgadmin_data:
+    name: microservices-pgadmin-data

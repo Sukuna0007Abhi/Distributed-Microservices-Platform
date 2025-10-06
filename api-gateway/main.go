@@ -17,15 +17,21 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+
+	"microservices-platform/pkg/middleware"
+	"microservices-platform/pkg/proxy"
+	"microservices-platform/pkg/resilience"
 )
 
 type Config struct {
-	Port              string
-	UserServiceURL    string
-	OrderServiceURL   string
-	ProductServiceURL string
-	PaymentServiceURL string
+	Port                   string
+	UserServiceURL         string
+	OrderServiceURL        string
+	ProductServiceURL      string
+	PaymentServiceURL      string
 	NotificationServiceURL string
+	JWTSecret              string
+	Environment            string
 }
 
 func loadConfig() *Config {
@@ -36,6 +42,8 @@ func loadConfig() *Config {
 		ProductServiceURL:      getEnv("PRODUCT_SERVICE_URL", "product-service:8083"),
 		PaymentServiceURL:      getEnv("PAYMENT_SERVICE_URL", "payment-service:8084"),
 		NotificationServiceURL: getEnv("NOTIFICATION_SERVICE_URL", "notification-service:8085"),
+		JWTSecret:              getEnv("JWT_SECRET", "your-jwt-secret-key"),
+		Environment:            getEnv("ENVIRONMENT", "development"),
 	}
 }
 
@@ -61,35 +69,46 @@ func main() {
 	// Load configuration
 	cfg := loadConfig()
 
+	// Initialize gateway with services
+	gateway := setupGateway(cfg)
+
 	// Setup Gin router
-	gin.SetMode(gin.ReleaseMode)
+	if cfg.Environment == "production" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	router := gin.New()
 	
-	// Middleware
-	router.Use(gin.Logger())
+	// Global middleware
+	router.Use(proxy.RequestLoggingHandler())
 	router.Use(gin.Recovery())
-	router.Use(corsMiddleware())
-	router.Use(tracingMiddleware())
-	router.Use(metricsMiddleware())
+	router.Use(middleware.CORSMiddleware())
+	router.Use(middleware.TracingMiddleware("api-gateway"))
+	router.Use(middleware.MetricsMiddleware())
+	router.Use(middleware.RequestIDMiddleware())
 
-	// Health check
-	router.GET("/health", healthCheck)
+	// Health checks
+	router.GET("/health", gateway.HealthCheckHandler())
+	router.GET("/health/:service", serviceHealthHandler(gateway))
 
 	// Metrics endpoint
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	// API routes
-	setupRoutes(router, cfg)
+	// API routes with proper authentication and authorization
+	setupAPIRoutes(router, gateway, cfg)
 
-	// Create HTTP server
+	// Create HTTP server with timeouts
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: router,
+		Addr:           ":" + cfg.Port,
+		Handler:        router,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1MB
 	}
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("API Gateway starting on port %s", cfg.Port)
+		log.Printf("🚀 API Gateway starting on port %s (environment: %s)", cfg.Port, cfg.Environment)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}
@@ -100,7 +119,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down API Gateway...")
+	log.Println("🛑 Shutting down API Gateway...")
 
 	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -110,130 +129,161 @@ func main() {
 		log.Fatalf("API Gateway forced to shutdown: %v", err)
 	}
 
-	log.Println("API Gateway stopped")
+	log.Println("✅ API Gateway stopped gracefully")
 }
 
-func setupRoutes(router *gin.Engine, cfg *Config) {
+// setupGateway configures the gateway with all microservices
+func setupGateway(cfg *Config) *proxy.Gateway {
+	gateway := proxy.NewGateway()
+
+	// Register services with circuit breakers and health checks
+	services := []*proxy.ServiceConfig{
+		{
+			Name:       "user-service",
+			URL:        "http://" + cfg.UserServiceURL,
+			HealthPath: "/health",
+			Timeout:    30 * time.Second,
+			CircuitBreaker: resilience.NewCircuitBreaker(resilience.CircuitBreakerSettings{
+				MaxFailures:      5,
+				ResetTimeout:     60 * time.Second,
+				SuccessThreshold: 3,
+				Timeout:          30 * time.Second,
+			}),
+		},
+		{
+			Name:       "order-service",
+			URL:        "http://" + cfg.OrderServiceURL,
+			HealthPath: "/health",
+			Timeout:    30 * time.Second,
+			CircuitBreaker: resilience.NewCircuitBreaker(resilience.DefaultSettings()),
+		},
+		{
+			Name:       "product-service",
+			URL:        "http://" + cfg.ProductServiceURL,
+			HealthPath: "/health",
+			Timeout:    30 * time.Second,
+			CircuitBreaker: resilience.NewCircuitBreaker(resilience.DefaultSettings()),
+		},
+		{
+			Name:       "payment-service",
+			URL:        "http://" + cfg.PaymentServiceURL,
+			HealthPath: "/health",
+			Timeout:    30 * time.Second,
+			CircuitBreaker: resilience.NewCircuitBreaker(resilience.DefaultSettings()),
+		},
+		{
+			Name:       "notification-service",
+			URL:        "http://" + cfg.NotificationServiceURL,
+			HealthPath: "/health",
+			Timeout:    30 * time.Second,
+			CircuitBreaker: resilience.NewCircuitBreaker(resilience.DefaultSettings()),
+		},
+	}
+
+	for _, service := range services {
+		gateway.RegisterService(service)
+	}
+
+	return gateway
+}
+
+// setupAPIRoutes configures API routes with proper authentication
+func setupAPIRoutes(router *gin.Engine, gateway *proxy.Gateway, cfg *Config) {
 	api := router.Group("/api/v1")
 	
-	// User service routes
-	userGroup := api.Group("/users")
+	// Public routes (no authentication required)
+	public := api.Group("/")
 	{
-		userGroup.POST("", proxyToService(cfg.UserServiceURL, "/api/v1/users"))
-		userGroup.GET("/:id", proxyToService(cfg.UserServiceURL, "/api/v1/users"))
-		userGroup.PUT("/:id", proxyToService(cfg.UserServiceURL, "/api/v1/users"))
-		userGroup.DELETE("/:id", proxyToService(cfg.UserServiceURL, "/api/v1/users"))
-		userGroup.GET("", proxyToService(cfg.UserServiceURL, "/api/v1/users"))
+		// Authentication endpoint
+		public.POST("/auth/login", gateway.ProxyHandler("user-service"))
+		
+		// Public product endpoints
+		public.GET("/products", gateway.ProxyHandler("product-service"))
+		public.GET("/products/:id", gateway.ProxyHandler("product-service"))
+		public.GET("/products/search", gateway.ProxyHandler("product-service"))
 	}
 
-	// Auth routes
-	authGroup := api.Group("/auth")
+	// Protected routes (authentication required)
+	protected := api.Group("/")
+	protected.Use(middleware.AuthMiddleware(cfg.JWTSecret))
 	{
-		authGroup.POST("/login", proxyToService(cfg.UserServiceURL, "/api/v1/auth/login"))
+		// User management
+		userGroup := protected.Group("/users")
+		{
+			userGroup.POST("", gateway.ProxyHandler("user-service"))
+			userGroup.GET("/:id", gateway.ProxyHandler("user-service"))
+			userGroup.PUT("/:id", gateway.ProxyHandler("user-service"))
+			userGroup.DELETE("/:id", gateway.ProxyHandler("user-service"))
+			userGroup.GET("", gateway.ProxyHandler("user-service"))
+		}
+
+		// Order management
+		orderGroup := protected.Group("/orders")
+		{
+			orderGroup.POST("", gateway.ProxyHandler("order-service"))
+			orderGroup.GET("/:id", gateway.ProxyHandler("order-service"))
+			orderGroup.PUT("/:id/status", gateway.ProxyHandler("order-service"))
+			orderGroup.POST("/:id/cancel", gateway.ProxyHandler("order-service"))
+			orderGroup.GET("", gateway.ProxyHandler("order-service"))
+		}
+
+		// Payment management
+		paymentGroup := protected.Group("/payments")
+		{
+			paymentGroup.POST("", gateway.ProxyHandler("payment-service"))
+			paymentGroup.GET("/:id", gateway.ProxyHandler("payment-service"))
+			paymentGroup.POST("/:id/refund", gateway.ProxyHandler("payment-service"))
+			paymentGroup.GET("", gateway.ProxyHandler("payment-service"))
+		}
+
+		// Notification management
+		notificationGroup := protected.Group("/notifications")
+		{
+			notificationGroup.POST("", gateway.ProxyHandler("notification-service"))
+			notificationGroup.GET("/:id", gateway.ProxyHandler("notification-service"))
+			notificationGroup.GET("", gateway.ProxyHandler("notification-service"))
+			notificationGroup.PUT("/:id/read", gateway.ProxyHandler("notification-service"))
+			notificationGroup.DELETE("/:id", gateway.ProxyHandler("notification-service"))
+			notificationGroup.POST("/subscribe", gateway.ProxyHandler("notification-service"))
+		}
 	}
 
-	// Order service routes
-	orderGroup := api.Group("/orders")
+	// Admin routes (admin authentication required)
+	admin := api.Group("/admin")
+	admin.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+	// TODO: Add admin role validation
 	{
-		orderGroup.POST("", proxyToService(cfg.OrderServiceURL, "/api/v1/orders"))
-		orderGroup.GET("/:id", proxyToService(cfg.OrderServiceURL, "/api/v1/orders"))
-		orderGroup.PUT("/:id/status", proxyToService(cfg.OrderServiceURL, "/api/v1/orders"))
-		orderGroup.POST("/:id/cancel", proxyToService(cfg.OrderServiceURL, "/api/v1/orders"))
-		orderGroup.GET("", proxyToService(cfg.OrderServiceURL, "/api/v1/orders"))
+		// Product management (admin only)
+		adminProductGroup := admin.Group("/products")
+		{
+			adminProductGroup.POST("", gateway.ProxyHandler("product-service"))
+			adminProductGroup.PUT("/:id", gateway.ProxyHandler("product-service"))
+			adminProductGroup.DELETE("/:id", gateway.ProxyHandler("product-service"))
+			adminProductGroup.PUT("/:id/inventory", gateway.ProxyHandler("product-service"))
+		}
 	}
 
-	// Product service routes
-	productGroup := api.Group("/products")
+	// Webhook endpoints (no authentication, but should validate signatures)
+	webhooks := api.Group("/webhooks")
 	{
-		productGroup.POST("", proxyToService(cfg.ProductServiceURL, "/api/v1/products"))
-		productGroup.GET("/:id", proxyToService(cfg.ProductServiceURL, "/api/v1/products"))
-		productGroup.PUT("/:id", proxyToService(cfg.ProductServiceURL, "/api/v1/products"))
-		productGroup.DELETE("/:id", proxyToService(cfg.ProductServiceURL, "/api/v1/products"))
-		productGroup.GET("", proxyToService(cfg.ProductServiceURL, "/api/v1/products"))
-		productGroup.GET("/search", proxyToService(cfg.ProductServiceURL, "/api/v1/products/search"))
-		productGroup.PUT("/:id/inventory", proxyToService(cfg.ProductServiceURL, "/api/v1/products"))
-	}
-
-	// Payment service routes
-	paymentGroup := api.Group("/payments")
-	{
-		paymentGroup.POST("", proxyToService(cfg.PaymentServiceURL, "/api/v1/payments"))
-		paymentGroup.GET("/:id", proxyToService(cfg.PaymentServiceURL, "/api/v1/payments"))
-		paymentGroup.POST("/:id/refund", proxyToService(cfg.PaymentServiceURL, "/api/v1/payments"))
-		paymentGroup.GET("", proxyToService(cfg.PaymentServiceURL, "/api/v1/payments"))
-		paymentGroup.POST("/webhook", proxyToService(cfg.PaymentServiceURL, "/api/v1/payments/webhook"))
-	}
-
-	// Notification service routes
-	notificationGroup := api.Group("/notifications")
-	{
-		notificationGroup.POST("", proxyToService(cfg.NotificationServiceURL, "/api/v1/notifications"))
-		notificationGroup.GET("/:id", proxyToService(cfg.NotificationServiceURL, "/api/v1/notifications"))
-		notificationGroup.GET("", proxyToService(cfg.NotificationServiceURL, "/api/v1/notifications"))
-		notificationGroup.PUT("/:id/read", proxyToService(cfg.NotificationServiceURL, "/api/v1/notifications"))
-		notificationGroup.DELETE("/:id", proxyToService(cfg.NotificationServiceURL, "/api/v1/notifications"))
-		notificationGroup.POST("/subscribe", proxyToService(cfg.NotificationServiceURL, "/api/v1/notifications/subscribe"))
+		webhooks.POST("/payments/:provider", gateway.ProxyHandler("payment-service"))
 	}
 }
 
-func proxyToService(serviceURL, basePath string) gin.HandlerFunc {
+// serviceHealthHandler returns health status for a specific service
+func serviceHealthHandler(gateway *proxy.Gateway) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// This is a simplified proxy - in production you'd use a proper reverse proxy
+		serviceName := c.Param("service")
+		
+		// This would require exposing service health checking from the gateway
 		c.JSON(http.StatusOK, gin.H{
-			"message":     "Request would be proxied to " + serviceURL,
-			"path":        c.Request.URL.Path,
-			"method":      c.Request.Method,
-			"service_url": serviceURL,
+			"service": serviceName,
+			"message": "Service health check endpoint - implementation needed",
 		})
 	}
 }
 
-func healthCheck(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "healthy",
-		"service": "api-gateway",
-		"time":    time.Now().UTC(),
-	})
-}
 
-func corsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Credentials", "true")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
-		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
-		}
-
-		c.Next()
-	}
-}
-
-func tracingMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tracer := otel.Tracer("api-gateway")
-		ctx, span := tracer.Start(c.Request.Context(), c.FullPath())
-		defer span.End()
-
-		c.Request = c.Request.WithContext(ctx)
-		c.Next()
-	}
-}
-
-func metricsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-		duration := time.Since(start)
-		
-		// Here you would record metrics like request duration, status code, etc.
-		log.Printf("Request: %s %s - Status: %d - Duration: %v", 
-			c.Request.Method, c.Request.URL.Path, c.Writer.Status(), duration)
-	}
-}
 
 func initTracer(serviceName string) (*tracesdk.TracerProvider, error) {
 	exp, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint("http://jaeger:14268/api/traces")))
